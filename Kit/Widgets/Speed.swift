@@ -345,7 +345,6 @@ public class SpeedWidget: WidgetWrapper {
         }
         
         if self.valueState {
-            let rowWidth: CGFloat = self.unitsState ? 48 : 30
             let rowHeight: CGFloat = self.frame.height / 2
             let style = NSMutableParagraphStyle()
             style.alignment = self.valueAlignment
@@ -361,21 +360,26 @@ public class SpeedWidget: WidgetWrapper {
                 NSAttributedString.Key.paragraphStyle: style
             ]
             
-            let inputY: CGFloat = self.displayValueState == "io" ? rowHeight + 1 : 1
-            let outputY: CGFloat = self.displayValueState == "io" ? 1 : rowHeight + 1
-            
-            var rect = CGRect(x: Constants.Widget.margin.x + x, y: inputY, width: rowWidth - (Constants.Widget.margin.x*2), height: rowHeight)
             let input = NSAttributedString.init(
                 string: Units(bytes: self.inputValue).getReadableSpeed(base: base, unit: self.speedUnit, omitUnits: !self.unitsState),
                 attributes: inputStringAttributes
             )
-            input.draw(with: rect)
-            
-            rect = CGRect(x: Constants.Widget.margin.x + x, y: outputY, width: rowWidth - (Constants.Widget.margin.x*2), height: rowHeight)
             let output = NSAttributedString.init(
                 string: Units(bytes: self.outputValue).getReadableSpeed(base: base, unit: self.speedUnit, omitUnits: !self.unitsState),
                 attributes: outputStringAttributes
             )
+            
+            // 动态宽度：取上下行文字最大宽度，最小 26pt，避免频繁跳动过大
+            let textWidth = max(input.size().width, output.size().width).rounded(.up)
+            let rowWidth: CGFloat = max(textWidth + 4, 26)
+            
+            let inputY: CGFloat = self.displayValueState == "io" ? rowHeight + 1 : 1
+            let outputY: CGFloat = self.displayValueState == "io" ? 1 : rowHeight + 1
+            
+            var rect = CGRect(x: Constants.Widget.margin.x + x, y: inputY, width: rowWidth, height: rowHeight)
+            input.draw(with: rect)
+            
+            rect = CGRect(x: Constants.Widget.margin.x + x, y: outputY, width: rowWidth, height: rowHeight)
             output.draw(with: rect)
             
             width += rowWidth

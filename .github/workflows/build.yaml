@@ -4,9 +4,7 @@ on:
   push:
     branches:
       - master
-  pull_request:
-    branches:
-      - master
+  workflow_dispatch:
 
 concurrency:
   group: build-${{ github.ref }}
@@ -17,17 +15,35 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Check release tag
-        if: github.event_name == 'push'
-        id: release
+      - name: Build
         run: |
-          if [ -n "$(git tag --points-at HEAD --list 'v*')" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
+          xcodebuild -scheme Stats \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            build
 
-      - run: xcodebuild -scheme Stats -destination 'platform=macOS' -configuration Release archive CODE_SIGNING_ALLOWED=NO
-        if: steps.release.outputs.skip != 'true'
+      - name: Ad-hoc sign nested bundles
+        run: |
+          APP="build/Build/Products/Release/Stats.app"
+          find "$APP/Contents" \( -name "*.appex" -o -name "*.app" -o -name "*.framework" \) -print0 \
+            | while IFS= read -r -d '' b; do codesign --force --sign - "$b" || true; done
+          codesign --force --sign - "$APP"
+          codesign --verify --deep --strict "$APP" || true
+
+      - name: Zip
+        run: |
+          cd build/Build/Products/Release
+          ditto -c -k --keepParent Stats.app Stats.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Stats
+          path: build/Build/Products/Release/Stats.zip
+          if-no-files-found: error
