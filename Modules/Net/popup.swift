@@ -138,8 +138,12 @@ internal class Popup: PopupWrapper {
         self.emojiCCState = Store.shared.bool(key: "\(self.title)_emojiCC", defaultValue: self.emojiCCState)
         
         self.addArrangedSubview(self.initDashboard())
-        self.addArrangedSubview(self.initChart())
-        self.addArrangedSubview(self.initConnectivityChart())
+        if Store.shared.bool(key: "\(self.title)_showUsageChart", defaultValue: true) {
+            self.addArrangedSubview(self.initChart())
+        }
+        if Store.shared.bool(key: "\(self.title)_showConnectivityChart", defaultValue: true) {
+            self.addArrangedSubview(self.initConnectivityChart())
+        }
         self.addArrangedSubview(self.initDetails())
         self.addArrangedSubview(self.initInterface())
         self.addArrangedSubview(self.initAddress())
