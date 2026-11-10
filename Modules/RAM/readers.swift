@@ -128,12 +128,8 @@ public class ProcessReader: Reader<[TopProcess]> {
         }
         
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/top")
-        if self.combinedProcesses {
-            task.arguments = ["-l", "1", "-o", "mem", "-stats", "pid,command,mem"]
-        } else {
-            task.arguments = ["-l", "1", "-o", "mem", "-n", "\(self.numberOfProcesses)", "-stats", "pid,command,mem"]
-        }
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["-Aceo", "pid,rss,comm"]
         
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -149,7 +145,7 @@ public class ProcessReader: Reader<[TopProcess]> {
         do {
             try task.run()
         } catch let err {
-            error("top(): \(err.localizedDescription)", log: self.log)
+            error("ps(): \(err.localizedDescription)", log: self.log)
             return
         }
         
@@ -160,51 +156,44 @@ public class ProcessReader: Reader<[TopProcess]> {
         guard let output, !output.isEmpty else { return }
         
         var processes: [TopProcess] = []
+        var isHeader = true
         output.enumerateLines { (line, _) in
-            if line.matches("^\\d+\\** +.* +\\d+[A-Z]*\\+?\\-? *$") {
-                processes.append(ProcessReader.parseProcess(line))
+            if isHeader {
+                isHeader = false
+                return
+            }
+            if let process = ProcessReader.parseProcess(line) {
+                processes.append(process)
             }
         }
         
-        if !self.combinedProcesses {
-            self.callback(processes)
-            return
-        }
-        
-        var processGroups: [String: [TopProcess]] = [:]
-        for process in processes {
-            let responsiblePid = ProcessReader.getResponsiblePid(process.pid)
-            let groupKey = "\(responsiblePid)"
-            
-            if processGroups[groupKey] != nil {
-                processGroups[groupKey]!.append(process)
-            } else {
-                processGroups[groupKey] = [process]
+        let result: [TopProcess]
+        if self.combinedProcesses {
+            var groups: [Int: [TopProcess]] = [:]
+            for process in processes {
+                groups[ProcessReader.getResponsiblePid(process.pid), default: []].append(process)
             }
-        }
-        
-        var result: [TopProcess] = []
-        for (_, processes) in processGroups {
-            let totalUsage = processes.reduce(0) { $0 + $1.usage }
-            let firstProcess = processes.first!
-            let name: String
-            
-            if let app = NSRunningApplication(processIdentifier: pid_t(ProcessReader.getResponsiblePid(firstProcess.pid))),
-               let appName = app.localizedName {
-                name = appName
-            } else {
-                name = firstProcess.name
+            result = groups.map { (pid, processes) in
+                TopProcess(
+                    pid: pid,
+                    name: processes.first?.name ?? "",
+                    usage: processes.reduce(0) { $0 + $1.usage }
+                )
             }
-            
-            result.append(TopProcess(
-                pid: ProcessReader.getResponsiblePid(firstProcess.pid),
-                name: name,
-                usage: totalUsage
-            ))
+        } else {
+            result = processes
         }
         
-        result.sort { $0.usage > $1.usage }
-        self.callback(Array(result.prefix(self.numberOfProcesses)))
+        let top = result.sorted { $0.usage > $1.usage }.prefix(self.numberOfProcesses)
+        self.callback(top.map { self.localized($0) })
+    }
+    
+    private func localized(_ process: TopProcess) -> TopProcess {
+        var name = NSRunningApplication(processIdentifier: pid_t(process.pid))?.localizedName ?? process.name
+        if process.name.contains("com.apple.Virtua") && name.contains("Docker") {
+            name = "Docker"
+        }
+        return TopProcess(pid: process.pid, name: name, usage: process.usage)
     }
     
     private static let dynGetResponsiblePidFunc: UnsafeMutableRawPointer? = {
@@ -226,53 +215,18 @@ public class ProcessReader: Reader<[TopProcess]> {
         return Int(responsiblePid)
     }
     
-    static public func parseProcess(_ raw: String) -> TopProcess {
-        var str = raw.trimmingCharacters(in: .whitespaces)
-        let pidString = str.find(pattern: "^\\d+")
+    static public func parseProcess(_ raw: String) -> TopProcess? {
+        let str = raw.trimmingCharacters(in: .whitespaces)
+        let pidFind = str.findAndCrop(pattern: "^\\d+")
+        guard let pid = Int(pidFind.cropped) else { return nil }
         
-        if let range = str.range(of: pidString) {
-            str = str.replacingCharacters(in: range, with: "")
-        }
+        let rssFind = pidFind.remain.findAndCrop(pattern: "^\\d+")
+        guard let rss = Double(rssFind.cropped) else { return nil }
         
-        var arr = str.split(separator: " ")
-        if arr.first == "*" {
-            arr.removeFirst()
-        }
+        let command = rssFind.remain.trimmingCharacters(in: .whitespaces)
+        guard !command.isEmpty else { return nil }
         
-        var usageString = str.suffix(6)
-        if let lastElement = arr.last {
-            usageString = lastElement
-            arr.removeLast()
-        }
-        
-        var command = arr.joined(separator: " ")
-            .replacingOccurrences(of: pidString, with: "")
-            .trimmingCharacters(in: .whitespaces)
-        
-        if let regex = try? NSRegularExpression(pattern: " (\\+|\\-)*$", options: .caseInsensitive) {
-            command = regex.stringByReplacingMatches(in: command, options: [], range: NSRange(location: 0, length: command.count), withTemplate: "")
-        }
-        
-        let pid = Int(pidString.filter("01234567890.".contains)) ?? 0
-        var usage = Double(usageString.filter("01234567890.".contains)) ?? 0
-        if usageString.last == "G" {
-            usage *= 1024 // apply gigabyte multiplier
-        } else if usageString.last == "K" {
-            usage /= 1024 // apply kilobyte divider
-        } else if usageString.last == "M" && usageString.count == 5 {
-            usage /= 1024
-            usage *= 1000
-        }
-        
-        var name: String = command
-        if let app = NSRunningApplication(processIdentifier: pid_t(pid)), let n = app.localizedName {
-            name = n
-        }
-        
-        if command.contains("com.apple.Virtua") && name.contains("Docker") {
-            name = "Docker"
-        }
-        
-        return TopProcess(pid: pid, name: name, usage: usage * Double(1000 * 1000))
+        // ps reports RSS (resident set size, the same as Activity Monitor's "Real Memory") in kilobytes.
+        return TopProcess(pid: pid, name: command, usage: rss * 1024)
     }
 }
