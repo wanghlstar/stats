@@ -10,6 +10,7 @@
 //
 
 import Cocoa
+import Darwin
 import Kit
 
 internal class UsageReader: Reader<RAM_Usage> {
@@ -169,17 +170,17 @@ public class ProcessReader: Reader<[TopProcess]> {
         
         let result: [TopProcess]
         if self.combinedProcesses {
-            var groups: [Int: [TopProcess]] = [:]
+            var groups: [Int: (name: String, usage: Double)] = [:]
             for process in processes {
-                groups[ProcessReader.getResponsiblePid(process.pid), default: []].append(process)
+                let pid = ProcessReader.getResponsiblePid(process.pid)
+                // Sum the physical footprint instead of RSS: RSS includes shared frameworks
+                // (WeChatAppEx, WebKit, ...) that would be counted once per helper process.
+                let usage = ProcessReader.footprint(process.pid) ?? process.usage
+                var group = groups[pid] ?? (name: process.name, usage: 0)
+                group.usage += usage
+                groups[pid] = group
             }
-            result = groups.map { (pid, processes) in
-                TopProcess(
-                    pid: pid,
-                    name: processes.first?.name ?? "",
-                    usage: processes.reduce(0) { $0 + $1.usage }
-                )
-            }
+            result = groups.map { TopProcess(pid: $0.key, name: $0.value.name, usage: $0.value.usage) }
         } else {
             result = processes
         }
@@ -194,6 +195,17 @@ public class ProcessReader: Reader<[TopProcess]> {
             name = "Docker"
         }
         return TopProcess(pid: process.pid, name: name, usage: process.usage)
+    }
+    
+    private static func footprint(_ pid: Int) -> Double? {
+        var info = rusage_info_current()
+        let result = withUnsafeMutablePointer(to: &info) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { pointer in
+                proc_pid_rusage(pid_t(pid), RUSAGE_INFO_CURRENT, pointer)
+            }
+        }
+        guard result == 0 else { return nil }
+        return Double(info.ri_phys_footprint)
     }
     
     private static let dynGetResponsiblePidFunc: UnsafeMutableRawPointer? = {
